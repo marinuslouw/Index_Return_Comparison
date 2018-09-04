@@ -1,0 +1,278 @@
+---
+title: "README"
+author: "Marinus Louw"
+date: "24/08/2018"
+output: html_document
+---
+```{r}
+if (!require(rmsfuns)) install.packages("rmsfuns")
+library(rmsfuns)
+load_pkg(c("tbl2xts","tinytex", "rmarkdown", "xts", "dplyr", "lubridate",
+           "glue", "lubridate", "tibble", "readr", "tidyverse", 
+           "PerformanceAnalytics", "readxl", "ggthemes", "ggsci"))
+```
+
+### Prelimanary: Step 1
+```{r}
+# Load the datasets
+  J200 <- 
+    read_rds("data/J200.rds")
+  Daily_TRI <- 
+    read_rds("data/Fin_Data_SA_US_NKY.rds")
+```
+### Prelimanary: Step 2
+```{r}
+# Adjust the J200 data to include a Year_Month and rename the Sector
+  Daily_J200_Adjusted <-
+    J200 %>% 
+    mutate(Year_Month = format(date, "%Y%B"))
+  colnames(Daily_J200_Adjusted)[colnames(Daily_J200_Adjusted)=="ICB_INDUSTRY_NAME"] <- "Sector"
+# Adjust the TRI data to include a Year_Month and rename the Sector and Industry columns
+  Daily_TRI_Adjusted <- 
+    Daily_TRI %>% 
+    mutate(Year_Month = format(date, "%Y%B"))
+  colnames(Daily_TRI_Adjusted)[colnames(Daily_TRI_Adjusted)=="BICS_LEVEL_1_SECTOR_NAME"] <- "Sector"
+  colnames(Daily_TRI_Adjusted)[colnames(Daily_TRI_Adjusted)=="BICS_LEVEL_2_INDUSTRY_GROUP_NAME"] <- "Industry"
+```
+
+## Assignment 1:
+### Question 1.1.): Compare the Financials and Industrials returns for 2017
+```{r}
+# Step 1
+  # Calculate a daily returns column
+    Daily_Ret_J200_Adjusted <- 
+      Daily_J200_Adjusted %>%
+      filter(Sector %in% c("Industrials","Financials")) %>% 
+      mutate(date = ymd(date)) %>%
+      filter(date >= ymd(20170101) & date < ymd(20180101)) %>% 
+      group_by(Tickers) %>% 
+      mutate(Daily_Returns = Prices/lag(Prices) - 1) %>%
+      ungroup()
+# Step 2
+  # Calculate the daily mean returns for each sector 
+    Sector_Ret_J200_Adjusted <- 
+      Daily_Ret_J200_Adjusted %>% 
+      group_by(date, Sector) %>%
+      summarise(Sector_Returns = mean(Daily_Returns, na.rm = TRUE)) %>%
+      ungroup()
+# Step 3 
+  # Create a graphical illustration to compare the returns of each sector
+    Sector_Ret_J200_Adjusted %>% 
+      ggplot() +
+      geom_boxplot(aes(x = Sector, y = Sector_Returns, fill = Sector)) +
+      geom_jitter(aes(x = Sector, y = Sector_Returns, color = Sector, alpha = 0.25)) +
+      labs(title = "Financials vs Industrials", subtitle = "Returns per Sector for 2017") +
+      theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank()) +
+      guides(color = FALSE, alpha = FALSE)
+```
+### Question 1.2.) Find the 5 most volatile stocks for the index
+```{r}
+# Step 1 
+  # Create a standard deviation column to illustrate volatility
+    SD_J200_Adjusted <- 
+      Daily_J200_Adjusted %>%
+      group_by(Tickers) %>% 
+      mutate(Daily_Returns = Prices/lag(Prices) - 1) %>%
+      mutate(Index = "J200") %>% 
+      group_by(Short.Name, Index) %>%
+      summarise(SD = sd(Daily_Returns, na.rm = TRUE)) %>%
+      ungroup()
+# Step 2
+  # Filter out the top 5 most volatile stocks for the index from 2017-2018
+    SD_J200_Adjusted %>%
+      top_n(5, SD)
+```
+### Question 1.3.) Use PerformanceAnalytics and compare the maximum drawdowns of the Industrials versus the Consumer Goods sectors
+```{r}
+# Step 1
+  # Create a wide xts from summarised daily mean industry prices
+    xts.Sector_Prices_J200_Adjusted <- 
+      Daily_J200_Adjusted %>%
+      filter(Sector %in% c("Industrials","Consumer Goods")) %>% 
+      group_by(date, Sector) %>% 
+      summarise(Mean_Prices = mean(Prices, na.rm = TRUE)) %>%
+      ungroup() %>% 
+      spread(key = Sector, value = Mean_Prices) %>% 
+      tbl_xts()
+# Step 2
+  # Use the xts package to calculate the daily sector returns
+    xts.Sector_Ret_J200_Adjusted <- 
+      xts.Sector_Prices_J200_Adjusted %>%
+      diff.xts(lag = 1, log = F, arithmetic = F) - 1 
+# Step 3
+  # Chart the drawdowns for the Industrials and Consumer Goods sectors
+    xts.Sector_Ret_J200_Adjusted %>% 
+      chart.Drawdown(main = "Drawdowns: Industrials and Consumer Goods Sectors")
+```
+
+## Assignment 2
+### Question 2.1.) Calculate the cap-weighted monthly index returns for every sector for each country
+```{r}
+# Step 1
+  # Calculate Daily Returns column
+    Daily_Ret_TRI_Adjusted <- 
+      Daily_TRI_Adjusted %>% 
+      group_by(Ticker) %>% 
+      mutate(Daily_Returns = TRI/lag(TRI) - 1) %>%
+      ungroup()
+# Step 2
+  # Calculate the Daily Cumulative Returns Column
+    Daily_CumRet_TRI_Adjusted <- 
+      Daily_Ret_TRI_Adjusted %>% 
+      mutate(Daily_Returns = coalesce(Daily_Returns, 0)) %>%
+      group_by(Ticker) %>%
+      mutate(Cum_Returns = cumprod( 1 + Daily_Returns)) %>%  
+      ungroup()
+# Step 3
+  # Calculate the Monthly Returns column
+    Sector_Monthly_Ret_TRI <-
+      Daily_CumRet_TRI_Adjusted %>% 
+      group_by(Year_Month, Ticker) %>%
+      filter(date == last(date)) %>%
+      arrange(date, Sector) %>% 
+      group_by(Universe, Sector, date,Year_Month) %>% 
+      summarise(Mean_Monthly_Returns = mean(Daily_Returns, na.rm = TRUE)) %>%
+      ungroup() 
+# Step 4
+  # Create a graph that compares the sectors according to universe
+    Sector_Monthly_Ret_TRI %>% 
+      ggplot() + 
+        geom_boxplot(aes(x = Sector, y = Mean_Monthly_Returns, fill = Sector)) +
+        geom_jitter(aes(x = Sector, y = Mean_Monthly_Returns, color = Sector, alpha = 0.25)) +
+        labs(title = "Monthly Index Returns per Sector", subtitle = "Cap Weighted") +
+        facet_wrap(~Universe) +
+        theme(axis.title.x=element_blank(),axis.text.x=element_blank(),axis.ticks.x=element_blank()) +
+        guides(color = FALSE, alpha = FALSE)
+
+```
+### Question 2.2.) Calculate the sharpe ratio for the equally weighted by country, cap-weighted index returns since 2017
+```{r}
+# Step 1
+  # Calculate Daily Returns column
+    Daily_Ret_TRI_Adjusted <- 
+      Daily_TRI_Adjusted %>% 
+      group_by(Ticker) %>% 
+      mutate(Daily_Returns = TRI/lag(TRI) - 1) %>%
+      ungroup()
+# Step 2
+  # Calculate the Monthly Sharpe Ratios
+    Monthly_Sharpe_TRI <- 
+      Daily_Ret_TRI_Adjusted %>% 
+      arrange(date, Year_Month) %>%
+      group_by(Year_Month, Ticker) %>%
+      filter(date == last(date)) %>%
+      group_by(date, Year_Month, Universe) %>%
+      summarise(Sharpe = mean(Daily_Returns, na.rm = TRUE) / sd(Daily_Returns, na.rm = TRUE)) %>%
+      ungroup()
+# Step 3
+  # Create a graph that compares the Sharpe ratios per universe
+    Monthly_Sharpe_TRI %>% 
+      ggplot() + 
+      geom_line(aes(x = date, y = Sharpe, color = Universe)) +
+      labs(title = "Monthly Sharpe Ratio per Country", x = "Date", y = "Sharpe Ratio") +
+      guides(alpha = FALSE)
+```
+### Question 2.3.) Plot all the cumulative returns for the Financials indexes of the three countries
+```{r}
+# Step 1
+ # Calculate Daily Returns column
+    Daily_Ret_TRI_Adjusted <- 
+      Daily_TRI_Adjusted %>% 
+      group_by(Ticker) %>% 
+      mutate(Daily_Returns = TRI/lag(TRI) - 1) %>%
+      ungroup()
+# Step 2
+  # Calculate the Daily Cumulative Returns Column
+    Financials_CumRet_TRI_Adjusted <- 
+      Daily_Ret_TRI_Adjusted %>% 
+      arrange(date) %>% 
+      filter(Sector %in% "Financials") %>%
+      mutate(Daily_Returns = coalesce(Daily_Returns, 0)) %>%
+      group_by(Universe, Ticker) %>%
+      mutate(Cum_Returns = cumprod( 1 + Daily_Returns)) %>% 
+      group_by(date, Universe) %>%
+      summarise(Cum_Returns_Country = mean(Cum_Returns, na.rm = TRUE)) %>% 
+      ungroup()
+# Step 3
+  # Create a graph that compares the sectors according to universe
+    ggplot(data = Financials_CumRet_TRI_Adjusted) + 
+      geom_line(aes(x = date,y = Cum_Returns_Country, color = Universe)) + 
+      theme_bw() + labs(title = "Financials Returns", y = "Returns")
+```
+### Question 2.4.) Calculate the JALSH index returns, by filtering the top 95% of Market Cap
+```{r}
+# Step 1
+  # Find the top 95% by market cap for the JALSH
+    MrktCap_JALSH <- 
+      Daily_TRI_Adjusted %>%   
+      filter(Universe %in% "JALSHAll") %>%
+      mutate(date = ymd(date)) %>% 
+      arrange(date, desc(Market.Cap)) %>%
+      group_by(date) %>% 
+      mutate(Cum_MrktCap = cumsum(Market.Cap)) %>%
+      mutate(Sum_MrktCap = sum(Market.Cap, na.rm = TRUE)) %>%
+      mutate(Percentage_MrktCap = (Cum_MrktCap/Sum_MrktCap)*100) %>%
+      ungroup() %>% 
+      filter(Percentage_MrktCap <= 95) 
+#Step 2
+  # Calculate the JALSH index returns for the filtered (top 95% of Market Cap) JALSH index     
+    Ret_MrktCap_JALSH <-
+      MrktCap_JALSH %>%
+      group_by(Ticker) %>% 
+      mutate(Daily_Returns = TRI/lag(TRI) - 1) %>%
+      group_by(date, Universe) %>%
+      summarise(Returns_JALSHAll = mean(Daily_Returns, na.rm = TRUE)) %>% 
+      ungroup()
+#Step 3
+  # Plot the returns for the 95% JALSH index on a histogram
+    Ret_MrktCap_JALSH %>% 
+      ggplot() + 
+      geom_density(aes(x = Returns_JALSHAll, fill = Universe)) +
+      theme_bw()
+```
+### Question 2.5.) Calculate and visually compare the rolling 60 day standard deviation for the Materials sectors of each country
+```{r}
+#Step 1
+  # Calculate Returns column
+    Daily_Ret_TRI_Adjusted <- 
+      Daily_TRI_Adjusted %>% 
+      group_by(Ticker) %>% 
+      mutate(Daily_Returns = TRI/lag(TRI) - 1) %>%
+      ungroup()
+#Step 2
+  # Create objects of the mean returns per Universe's Materials sector
+    # JALSHAll
+      JALSH_Materials <- 
+        Daily_Ret_TRI_Adjusted %>% 
+        filter(Sector %in% "Materials") %>%
+        group_by(date) %>% 
+        summarise(JALSH_Materials = mean(Daily_Returns, na.rm = TRUE)) %>% 
+        ungroup()
+    # SP500
+      SP500_Materials <- 
+        Daily_Ret_TRI_Adjusted %>% 
+        filter(Sector %in% "Materials") %>%
+        filter(Universe %in% "SP500") %>% 
+        group_by(date) %>% 
+        summarise(SP500_Materials = mean(Daily_Returns, na.rm = TRUE)) %>% 
+        ungroup()
+    # JALSHAll
+      NKY_Materials <- 
+        Daily_Ret_TRI_Adjusted %>% 
+        filter(Sector %in% "Materials") %>%
+        filter(Universe %in% "NKY") %>% 
+        group_by(date) %>% 
+        summarise(NKY_Materials = mean(Daily_Returns, na.rm = TRUE)) %>% 
+        ungroup()
+#Step 3
+  # Join the 3 tibble datasets and convert it to xts
+      Join_1 <- full_join(JALSH_Materials, SP500_Materials, by = "date")
+      Materials.xts <- full_join(Join_1, NKY_Materials, by = "date") %>% tbl_xts
+#Step 4
+  # Chart
+    chart.RollingPerformance(R = Materials.xts, FUN = "sd", 
+                           width = 60, main = "Rolling 60 day Standard Deviation", 
+                           legend.loc = "bottomleft")
+```
+
+
