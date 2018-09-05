@@ -9,7 +9,7 @@ Below is all the documentation towards completing assignments 1 & 2 for financia
 
 ## Prerequisites
 The following are packages that should be loaded as a prerequisite. 
-```{r warning=FALSE}
+```{r}
 if (!require(rmsfuns)) install.packages("rmsfuns")
 library(rmsfuns)
 load_pkg(c("tbl2xts","tinytex", "rmarkdown", "xts", "dplyr", "lubridate",
